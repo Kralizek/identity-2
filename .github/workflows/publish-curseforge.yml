@@ -1,0 +1,174 @@
+name: Publish to CurseForge
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub release tag to publish. Leave empty for the latest published release.
+        required: false
+        type: string
+      asset_pattern:
+        description: Release asset glob to download.
+        required: true
+        default: 'Identity-2-*-full.zip'
+        type: string
+      game_versions:
+        description: JSON array of CurseForge game versions.
+        required: true
+        default: '["12.1.0"]'
+        type: string
+      release_type:
+        description: CurseForge release type.
+        required: true
+        default: release
+        type: choice
+        options:
+          - alpha
+          - beta
+          - release
+      changelog_type:
+        description: CurseForge changelog format.
+        required: true
+        default: markdown
+        type: choice
+        options:
+          - markdown
+          - html
+          - text
+      dry_run:
+        description: Download and validate the release asset without uploading to CurseForge.
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish latest full package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$INPUT_RELEASE_TAG" ]; then
+            tag="$INPUT_RELEASE_TAG"
+          else
+            tag="$(gh release list --exclude-drafts --json tagName,publishedAt --jq 'sort_by(.publishedAt) | last | .tagName')"
+          fi
+
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "No published GitHub release was found." >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download full package asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-asset
+          gh release download '${{ steps.release.outputs.tag }}' \
+            --pattern '${{ inputs.asset_pattern }}' \
+            --dir release-asset \
+            --clobber
+
+      - name: Validate downloaded asset
+        id: asset
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find release-asset -maxdepth 1 -type f -name '*.zip' | sort)
+
+          if [ "${#assets[@]}" -ne 1 ]; then
+            echo "Expected exactly one ZIP asset, found ${#assets[@]}." >&2
+            printf '%s\n' "${assets[@]}" >&2
+            exit 1
+          fi
+
+          unzip -t "${assets[0]}"
+          sha256sum "${assets[0]}"
+          echo "path=${assets[0]}" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "${assets[0]}")" >> "$GITHUB_OUTPUT"
+
+      - name: Build CurseForge metadata
+        id: metadata
+        env:
+          GAME_VERSIONS: ${{ inputs.game_versions }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          CHANGELOG_TYPE: ${{ inputs.changelog_type }}
+          DISPLAY_NAME: ${{ steps.asset.outputs.name }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          jq -n \
+            --argjson gameVersions "$GAME_VERSIONS" \
+            --arg releaseType "$RELEASE_TYPE" \
+            --arg changelogType "$CHANGELOG_TYPE" \
+            --arg displayName "$DISPLAY_NAME" \
+            --arg tag "$RELEASE_TAG" \
+            --rawfile changelog changelog.txt \
+            '{
+              changelog: $changelog,
+              changelogType: $changelogType,
+              displayName: $displayName,
+              gameVersions: $gameVersions,
+              releaseType: $releaseType,
+              relations: { projects: [] }
+            }' > curseforge-metadata.json
+
+          jq . curseforge-metadata.json
+          echo "path=curseforge-metadata.json" >> "$GITHUB_OUTPUT"
+
+      - name: Dry run summary
+        if: inputs.dry_run
+        run: |
+          cat <<'SUMMARY'
+          Dry run complete. No upload was attempted.
+
+          To publish for real, rerun this workflow with dry_run=false and set these repository secrets:
+          - CURSEFORGE_API_TOKEN
+          - CURSEFORGE_PROJECT_ID
+          SUMMARY
+          echo "Release tag: ${{ steps.release.outputs.tag }}"
+          echo "Asset: ${{ steps.asset.outputs.path }}"
+          echo "Metadata: ${{ steps.metadata.outputs.path }}"
+
+      - name: Upload to CurseForge
+        if: ${{ !inputs.dry_run }}
+        env:
+          CURSEFORGE_API_TOKEN: ${{ secrets.CURSEFORGE_API_TOKEN }}
+          CURSEFORGE_PROJECT_ID: ${{ secrets.CURSEFORGE_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CURSEFORGE_API_TOKEN:-}" ]; then
+            echo "Missing CURSEFORGE_API_TOKEN repository secret." >&2
+            exit 1
+          fi
+
+          if [ -z "${CURSEFORGE_PROJECT_ID:-}" ]; then
+            echo "Missing CURSEFORGE_PROJECT_ID repository secret." >&2
+            exit 1
+          fi
+
+          curl --fail-with-body \
+            --request POST \
+            --header "X-Api-Token: $CURSEFORGE_API_TOKEN" \
+            --form "metadata=<${{ steps.metadata.outputs.path }}" \
+            --form "file=@${{ steps.asset.outputs.path }}" \
+            "https://wow.curseforge.com/api/projects/$CURSEFORGE_PROJECT_ID/upload-file"
