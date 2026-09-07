@@ -1,0 +1,32 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Lua regression tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Midnight compatibility tests
+        run: npx --yes --package=fengari-node-cli fengari tests/run.lua
+
+      - name: Run legacy fallback tests
+        run: npx --yes --package=fengari-node-cli fengari tests/run.lua legacy

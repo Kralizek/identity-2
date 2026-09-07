@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version override. Defaults to Identity-2.toc.
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Build full package
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Midnight compatibility tests
+        shell: pwsh
+        run: npx --yes --package=fengari-node-cli fengari tests/run.lua
+
+      - name: Run legacy fallback tests
+        shell: pwsh
+        run: npx --yes --package=fengari-node-cli fengari tests/run.lua legacy
+
+      - name: Build full package
+        id: package
+        shell: pwsh
+        run: |
+          $version = '${{ inputs.version }}'
+          $result = ./scripts/package-full.ps1 -Version $version -OutputDirectory dist
+          $result | Format-List
+          "archive=$($result.Archive)" >> $env:GITHUB_OUTPUT
+          "name=$([System.IO.Path]::GetFileName($result.Archive))" >> $env:GITHUB_OUTPUT
+          "sha256=$($result.Sha256)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+      - name: Attach package to GitHub release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release upload '${{ github.event.release.tag_name }}' '${{ steps.package.outputs.archive }}' --clobber
