@@ -1,3 +1,11 @@
+====Version 4.3.0
+
+* Update the interface version for World of Warcraft: Midnight 12.1.0
+* Open configuration through the modern Settings category API
+* Hook C_ChatInfo.SendChatMessage and C_BattleNet.SendWhisper, with legacy API fallbacks
+* Preserve Battle.net whisper results and avoid formatting inaccessible chat arguments
+* Support string community IDs and display non-array community streams in settings
+
 ====Version 4.2.3
 
 * TOC bump

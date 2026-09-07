@@ -37,3 +37,4 @@ manual-changelog: changelog.txt
 
 ignore:
     - .gitignore
+    - tests

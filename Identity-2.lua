@@ -2,9 +2,13 @@ Identity2 = LibStub("AceAddon-3.0"):NewAddon("Identity2", "AceConsole-3.0", "Ace
 
 local L = LibStub("AceLocale-3.0"):GetLocale("Identity2", true)
 
+local chatAPI = C_ChatInfo and C_ChatInfo.SendChatMessage and C_ChatInfo or _G
+local battleNetAPI = C_BattleNet and C_BattleNet.SendWhisper and C_BattleNet or _G
+local battleNetWhisperMethod = battleNetAPI == _G and "BNSendWhisper" or "SendWhisper"
+
 local defaults = {
     global = {
-        version = "4.2.3"
+        version = "4.3.0"
     },
     profile = {
         enabled = true,
@@ -263,10 +267,10 @@ function Identity2:OnInitialize()
     self:LoadCommunities()
     
     LibStub("AceConfig-3.0"):RegisterOptionsTable("Identity2", options)
-    generalOptions = LibStub("AceConfigDialog-3.0"):AddToBlizOptions("Identity2", "Identity 2")
+    local generalOptions, generalOptionsID = LibStub("AceConfigDialog-3.0"):AddToBlizOptions("Identity2", "Identity 2")
     
     LibStub("AceConfig-3.0"):RegisterOptionsTable("Identity2 Profiles", LibStub("AceDBOptions-3.0"):GetOptionsTable(self.db))
-    profilesOptions = LibStub("AceConfigDialog-3.0"):AddToBlizOptions("Identity2 Profiles", L["profiles.name"], "Identity 2")
+    local profilesOptions = LibStub("AceConfigDialog-3.0"):AddToBlizOptions("Identity2 Profiles", L["profiles.name"], "Identity 2")
     
     self:RegisterChatCommand("id", "SlashProcessor")
     self:RegisterChatCommand("identity", "SlashProcessor")
@@ -278,9 +282,13 @@ function Identity2:OnInitialize()
     function self:SlashProcessor(input)
         self:RefreshConfig()
     
-        InterfaceOptionsFrame_OpenToCategory(generalOptions)
-		InterfaceOptionsFrame_OpenToCategory(profilesOptions)
-        InterfaceOptionsFrame_OpenToCategory(generalOptions)
+        if(Settings and Settings.OpenToCategory) then
+            Settings.OpenToCategory(generalOptionsID)
+        else
+            InterfaceOptionsFrame_OpenToCategory(generalOptions)
+            InterfaceOptionsFrame_OpenToCategory(profilesOptions)
+            InterfaceOptionsFrame_OpenToCategory(generalOptions)
+        end
     end
     
     self:RegisterEvent("CLUB_ADDED", "eventHandler")
@@ -574,7 +582,7 @@ function Identity2:LoadCommunities()
             }
         }
         
-        if(table.getn(community.streams) > 0 and C_Club.GetClubInfo(clubId) ~= nil) then
+        if(next(community.streams) and C_Club.GetClubInfo(clubId) ~= nil) then
             local i, s, streams = nil, nil, {}
             
             for i, s in pairs(C_Club.GetStreams(clubId)) do
@@ -749,19 +757,21 @@ function Identity2:AlterMessage(msg, channel)
 end
 
 function Identity2:SendChatMessage(msg, system, language, channel, targetPlayer)
+    if(canaccessallvalues and not canaccessallvalues(msg, system, language, channel, targetPlayer)) then
+        return self.hooks[chatAPI]["SendChatMessage"](msg, system, language, channel, targetPlayer)
+    end
+
     if(self.db.profile.enabled) then
         if(system == "CHANNEL") then
             local id, name, instanceID = GetChannelName(channel)
             
-            local s, e, clubId, streamId = string.find(name, "Community:(%d+):(%d+)")
+            local s, e, clubId, streamId = string.find(name or "", "Community:(%d+):(%d+)")
             
             if (clubId and streamId) then
-                if(self.db.profile.channels.communities[tonumber(clubId)]) then
-                    if(self.db.profile.channels.communities[tonumber(clubId)].enabled) then
-                        if(self.db.profile.channels.communities[tonumber(clubId)].streams[tonumber(streamId)]) then
-                            msg = self:AlterMessage(msg, self.db.profile.channels.communities[tonumber(clubId)].streams[tonumber(streamId)])
-                        end
-                    end
+                local community = self.db.profile.channels.communities[clubId] or self.db.profile.channels.communities[tonumber(clubId)]
+                if(community and community.enabled) then
+                    local stream = community.streams[streamId] or community.streams[tonumber(streamId)]
+                    msg = self:AlterMessage(msg, stream)
                 end
             else
                 if(self.db.profile.channels.customs[name]) then
@@ -769,7 +779,7 @@ function Identity2:SendChatMessage(msg, system, language, channel, targetPlayer)
                 end
             end
         else
-            msg = self:AlterMessage(msg, self.db.profile.channels[system])
+            msg = self:AlterMessage(msg, self.db.profile.channels[system or "SAY"])
         end
     end
 
@@ -777,13 +787,13 @@ function Identity2:SendChatMessage(msg, system, language, channel, targetPlayer)
     msg = string.sub(msg, 1, 255)
     
     -- call the original function through the self.hooks table
-    self.hooks["SendChatMessage"](msg, system, language, channel, targetPlayer)
+    return self.hooks[chatAPI]["SendChatMessage"](msg, system, language, channel, targetPlayer)
 end
 
-Identity2:RawHook("SendChatMessage", true)
+Identity2:RawHook(chatAPI, "SendChatMessage", "SendChatMessage", true)
 
 function Identity2:C_Club_SendMessage(clubId, streamId, message)
-    if(self.db.profile.enabled) then
+    if((not canaccessallvalues or canaccessallvalues(clubId, streamId, message)) and self.db.profile.enabled) then
         if(self.db.profile.channels.communities[clubId]) then
             if(self.db.profile.channels.communities[clubId].enabled) then
                 if(self.db.profile.channels.communities[clubId].streams[streamId]) then
@@ -794,23 +804,23 @@ function Identity2:C_Club_SendMessage(clubId, streamId, message)
     end
     
     -- call the original function through the self.hooks table
-    self.hooks[C_Club]["SendMessage"](clubId, streamId, message)
+    return self.hooks[C_Club]["SendMessage"](clubId, streamId, message)
 end
 
 Identity2:RawHook(C_Club, "SendMessage", "C_Club_SendMessage", true)
 
 function Identity2:BNSendWhisper(presenceID, message)
-    if(self.db.profile.enabled) then
+    if((not canaccessallvalues or canaccessallvalues(presenceID, message)) and self.db.profile.enabled) then
         if(self.db.profile.channels["BN_WHISPER"]) then
             message = Identity2:AlterMessage(message, self.db.profile.channels["BN_WHISPER"])
         end
     end
 
     -- call the original function through the self.hooks table
-    self.hooks["BNSendWhisper"](presenceID, message)
+    return self.hooks[battleNetAPI][battleNetWhisperMethod](presenceID, message)
 end
 
-Identity2:RawHook("BNSendWhisper", true)
+Identity2:RawHook(battleNetAPI, battleNetWhisperMethod, "BNSendWhisper", true)
 
 function Identity2:findCustomChannel(name)
     local function GetChannelListAsTable(...)
